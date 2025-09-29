@@ -1,0 +1,94 @@
+pipeline 
+{
+	agent any
+	
+    options 
+	{ 
+		disableConcurrentBuilds() 
+	}
+	
+    tools 
+	{
+		maven 'maven 3.9.2'
+		jdk 'openjdk-17'
+	}
+
+	environment 
+	{
+		WORKSPACE = "${env.WORKSPACE}/csru-in-app"
+		HTTP_PORT=2061
+	}
+	
+	stages 
+	{
+		stage('Clean workspace') 
+        {
+			steps
+			{
+				cleanWs()
+				dir("${env.WORKSPACE}@tmp") 
+				{
+                    deleteDir()
+                }
+			}
+		}
+
+		stage('Git clone') 
+        {
+            steps
+			{
+				script
+				{
+					withCredentials([gitUsernamePassword(credentialsId: 'urso_gitlab_registry', gitToolName: 'Default')])
+					{
+						sh "git clone --branch main https://gitlab.urso.local/alfabase/csru-in-app.git"	
+					}	
+				}
+			}
+		}
+		
+		stage('Backend build urso-in-app') 
+		{
+			steps 
+			{
+				sh 'echo "Building urso-in-app"'
+				dir('./csru-in-app/urso-in-app') 
+				{
+					sh ' mvn clean install -D maven.test.skip=true -P generate-sources' 
+				}
+			}		
+		}
+				
+		stage('Build/run backend image') 
+		{
+			steps 
+			{
+				echo 'Starting to build docker image for REST'
+				sh "cp ${WORKSPACE}/urso-in-app/target/urso-in-app-1.0-SNAPSHOT.jar  ${WORKSPACE}/docker/urso_in_app_be"
+				sh "cp ${WORKSPACE}/urso-in-app/target/classes/application.properties ${WORKSPACE}/docker/urso_in_app_be/application.properties"
+				
+				sh "cp /var/lib/jenkins/temp_data/jdk/openjdk-17.0.2.tar.gz ${WORKSPACE}/docker/urso_in_app_be"
+				
+				echo 'Running BE image'
+				
+				script 
+				{		
+					docker.withRegistry( 'https://gitlab.urso.local:5050/', 'urso_gitlab_registry'  )
+					{
+						def customImage = docker.build("alfabase:csru-in-app",
+								"-t alfabase/csru-in-app:${BUILD_ID} -f ${WORKSPACE}/docker/urso_in_app_be/Dockerfile ${WORKSPACE}/docker/urso_in_app_be")
+
+						sh 'docker ps -f name=urso_csru_in_app -q | xargs --no-run-if-empty docker container stop'
+						sh 'docker container ls -a -fname=urso_csru_in_app -q | xargs -r docker container rm'
+						
+						docker.image('alfabase:csru-in-app').withRun()
+						{
+							sh "docker run -d --restart always --env-file ${WORKSPACE}/docker/urso_in_app_be/env-dev.list --network GTNetwork2 -P --name urso_csru_in_app -p ${HTTP_PORT}:8080 alfabase:csru-in-app"
+						}
+						
+					}
+				}	
+			}
+		}
+	}
+}

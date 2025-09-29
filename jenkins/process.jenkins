@@ -1,0 +1,86 @@
+pipeline 
+{
+	agent any
+	
+    options 
+	{ 
+		disableConcurrentBuilds() 
+	}
+	
+    tools 
+	{
+		maven 'maven 3.9.2'
+		jdk 'openjdk-17'
+	}
+
+	environment 
+	{
+		WORKSPACE = "${env.WORKSPACE}/csru-in-app"
+    }
+	
+	stages 
+	{
+		stage('Clean workspace') 
+        {
+			steps
+			{
+				cleanWs()
+				dir("${env.WORKSPACE}@tmp") 
+				{
+                    deleteDir()
+                }
+			}
+		}
+
+		stage('Git clone') 
+        {
+            steps
+			{
+				script
+				{
+					withCredentials([gitUsernamePassword(credentialsId: 'urso_gitlab_registry', gitToolName: 'Default')])
+					{
+						sh "git clone --branch main https://gitlab.urso.local/alfabase/csru-in-app.git"	
+					}	
+				}
+			}
+		}
+		
+		stage('Backend build urso-in-app') 
+		{
+			steps 
+			{
+				sh 'echo "Building urso-in-app"'
+				dir('./csru-in-app/urso-in-app') 
+				{
+					sh ' mvn clean install -D maven.test.skip=true -P generate-sources' 
+				}
+			}		
+		}
+				
+		stage('Build/run backend image') 
+		{
+			steps 
+			{
+				echo 'Starting to build docker image for REST'
+				sh "cp ${WORKSPACE}/urso-in-app/target/urso-in-app-1.0-SNAPSHOT.jar  ${WORKSPACE}/docker/urso_in_app_be"
+				sh "cp ${WORKSPACE}/urso-in-app/target/classes/application.properties ${WORKSPACE}/docker/urso_in_app_be/application.properties"
+				
+				sh "cp /var/lib/jenkins/temp_data/jdk/openjdk-17.0.2.tar.gz ${WORKSPACE}/docker/urso_in_app_be"
+				
+				echo 'Pushing BE image to URSO'
+				
+				script 
+				{		
+					docker.withRegistry( 'https://gitlab.urso.local:5050/', 'urso_gitlab_registry'  )
+					{
+						def customImage = docker.build("alfabase/csru-in-app:${BUILD_ID}",
+								"-t gitlab.urso.local:5050/alfabase/csru-in-app:${BUILD_ID} -f ${WORKSPACE}/docker/urso_in_app_be/Dockerfile ${WORKSPACE}/docker/urso_in_app_be")
+
+						customImage.push()
+					}
+				}	
+			}
+		}
+	}
+}
